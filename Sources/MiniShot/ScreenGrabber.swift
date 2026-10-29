@@ -24,41 +24,66 @@ enum ScreenGrabber {
     /// 截下所有屏幕的完整画面
     @MainActor
     static func freezeAll() async throws -> [FrozenScreen] {
-        let content = try await SCShareableContent.excludingDesktopWindows(false, onScreenWindowsOnly: true)
+        var content: SCShareableContent?
         var result: [FrozenScreen] = []
         for screen in NSScreen.screens {
-            guard let id = screen.displayID,
-                  let display = content.displays.first(where: { $0.displayID == id }) else { continue }
-            let filter = SCContentFilter(display: display, excludingWindows: [])
-            let scale = CGFloat(filter.pointPixelScale)
-            let config = SCStreamConfiguration()
-            config.width = Int((screen.frame.width * scale).rounded())
-            config.height = Int((screen.frame.height * scale).rounded())
-            config.showsCursor = false
-            config.captureResolution = .best
-            let image = try await SCScreenshotManager.captureImage(contentFilter: filter, configuration: config)
+            let image: CGImage
+            if let byRect = await captureByRect(screen.frame, expectedScale: screen.backingScaleFactor) {
+                image = byRect
+            } else {
+                if content == nil {
+                    content = try await SCShareableContent.excludingDesktopWindows(false, onScreenWindowsOnly: true)
+                }
+                guard let id = screen.displayID,
+                      let display = content?.displays.first(where: { $0.displayID == id }) else { continue }
+                let filter = SCContentFilter(display: display, excludingWindows: [])
+                let scale = CGFloat(filter.pointPixelScale)
+                let config = SCStreamConfiguration()
+                config.width = Int((screen.frame.width * scale).rounded())
+                config.height = Int((screen.frame.height * scale).rounded())
+                config.showsCursor = false
+                config.captureResolution = .best
+                image = try await SCScreenshotManager.captureImage(contentFilter: filter, configuration: config)
+            }
             result.append(FrozenScreen(screen: screen, image: image,
                                        scale: CGFloat(image.width) / screen.frame.width))
         }
         return result
     }
+
+    /// 按屏幕区域截图（macOS 15.2+）。
+    /// 用显示器过滤器截图时，微信这类把窗口设为“禁止共享”的 App 会被漏掉，按区域截图和系统截图一样能截到。
+    /// rect 是 Cocoa 全局坐标；分辨率不足（拿到的不是 Retina 原始像素）时返回 nil，改用过滤器截图。
+    @MainActor
+    static func captureByRect(_ rect: CGRect, expectedScale: CGFloat) async -> CGImage? {
+        guard #available(macOS 15.2, *) else { return nil }
+        let primaryHeight = NSScreen.screens.first?.frame.height ?? 0
+        let cgRect = CGRect(x: rect.minX, y: primaryHeight - rect.maxY, width: rect.width, height: rect.height)
+        guard let image = try? await SCScreenshotManager.captureImage(in: cgRect),
+              CGFloat(image.width) >= rect.width * expectedScale * 0.98 else { return nil }
+        return image
+    }
 }
 
-/// 长截图时反复截取同一块区域，排除 MiniShot 自己的边框和面板
+/// 长截图时反复截取同一块区域
 final class RegionGrabber {
-    let scale: CGFloat
+    private(set) var scale: CGFloat
     private let filter: SCContentFilter
     private let config: SCStreamConfiguration
+    /// 按区域截图用的 Cocoa 全局坐标；nil 表示用过滤器截图
+    private var globalRect: CGRect?
 
-    private init(filter: SCContentFilter, config: SCStreamConfiguration, scale: CGFloat) {
+    private init(filter: SCContentFilter, config: SCStreamConfiguration, scale: CGFloat, globalRect: CGRect?) {
         self.filter = filter
         self.config = config
         self.scale = scale
+        self.globalRect = globalRect
     }
 
-    /// rect 是屏幕内的点坐标（左下角原点，和 NSView 一致）
+    /// rect 是屏幕内的点坐标（左下角原点，和 NSView 一致）。
+    /// canCaptureByRect：选区里没有 MiniShot 自己的窗口时可以按区域截图（截得到微信），否则用过滤器排除自己的窗口。
     @MainActor
-    static func make(screen: NSScreen, rect: CGRect) async throws -> RegionGrabber {
+    static func make(screen: NSScreen, rect: CGRect, canCaptureByRect: Bool) async throws -> RegionGrabber {
         let content = try await SCShareableContent.excludingDesktopWindows(false, onScreenWindowsOnly: false)
         guard let id = screen.displayID,
               let display = content.displays.first(where: { $0.displayID == id }) else { throw GrabError.displayNotFound }
@@ -73,11 +98,26 @@ final class RegionGrabber {
         config.height = Int((rect.height * scale).rounded())
         config.showsCursor = false
         config.captureResolution = .best
-        return RegionGrabber(filter: filter, config: config, scale: scale)
+
+        var globalRect: CGRect?
+        let global = rect.offsetBy(dx: screen.frame.minX, dy: screen.frame.minY)
+        if canCaptureByRect, await ScreenGrabber.captureByRect(global, expectedScale: scale) != nil {
+            globalRect = global
+        }
+        return RegionGrabber(filter: filter, config: config, scale: scale, globalRect: globalRect)
     }
 
+    @MainActor
     func capture() async throws -> CGImage {
-        try await SCScreenshotManager.captureImage(contentFilter: filter, configuration: config)
+        if let globalRect {
+            if let image = await ScreenGrabber.captureByRect(globalRect, expectedScale: scale),
+               image.width == config.width, image.height == config.height {
+                return image
+            }
+            // 尺寸和过滤器截图对不上会导致拼接出错，之后都改用过滤器截图
+            self.globalRect = nil
+        }
+        return try await SCScreenshotManager.captureImage(contentFilter: filter, configuration: config)
     }
 }
 

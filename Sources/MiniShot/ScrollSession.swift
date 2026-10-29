@@ -63,7 +63,8 @@ final class ScrollSession {
         do {
             // 等边框和面板出现在窗口列表里，才能把它们排除在截图之外
             try await Task.sleep(nanoseconds: 150_000_000)
-            let g = try await RegionGrabber.make(screen: screen, rect: rect)
+            let g = try await RegionGrabber.make(screen: screen, rect: rect,
+                                                 canCaptureByRect: !panel.frame.intersects(globalRect))
             grabber = g
             scale = g.scale
             let first = try await g.capture()
@@ -357,6 +358,8 @@ final class ScrollPanel {
         target.onDone = { [weak self] in self?.onDone?() }
         target.onCancel = { [weak self] in self?.onCancel?() }
     }
+
+    var frame: CGRect { panel.frame }
 
     func show() { panel.orderFrontRegardless() }
     func close() { panel.orderOut(nil) }
