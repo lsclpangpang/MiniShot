@@ -75,7 +75,7 @@ final class Toolbar: NSView {
                 textButton("开始长截图", symbol: "scroll", action: #selector(startScroll)),
                 iconButton("xmark", "取消（Esc）", #selector(cancel)),
             ]
-        case .editor(let longCapture):
+        case .editor(let showsLongCapture):
             let tools: [(Tool, String, String)] = [
                 (.rect, "rectangle", "矩形"), (.ellipse, "circle", "椭圆"),
                 (.arrow, "arrow.up.right", "箭头"), (.line, "line.diagonal", "直线"),
@@ -94,7 +94,7 @@ final class Toolbar: NSView {
             mainItems.append(iconButton("arrow.uturn.backward", "撤销（⌘Z）", #selector(undo)))
             mainItems.append(iconButton("arrow.uturn.forward", "重做（⇧⌘Z）", #selector(redo)))
             mainItems.append(SeparatorView())
-            if longCapture {
+            if showsLongCapture {
                 mainItems.append(iconButton("scroll", "长截图", #selector(longCapture)))
                 mainItems.append(SeparatorView())
             }
