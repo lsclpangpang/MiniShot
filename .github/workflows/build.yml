@@ -1,0 +1,47 @@
+name: Build
+
+on:
+  push:
+    branches: [main]
+    tags: ['v*']
+  pull_request:
+  workflow_dispatch:
+
+permissions:
+  contents: write
+
+jobs:
+  build:
+    runs-on: macos-15
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Run tests
+        run: swift test
+
+      - name: Build MiniShot.app
+        run: |
+          if [[ "$GITHUB_REF" == refs/tags/v* ]]; then
+            export VERSION="${GITHUB_REF_NAME#v}"
+          fi
+          ./build-app.sh
+
+      - name: Upload artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: MiniShot
+          path: build/MiniShot.zip
+
+      - name: Publish release
+        if: startsWith(github.ref, 'refs/tags/v')
+        uses: softprops/action-gh-release@v2
+        with:
+          files: build/MiniShot.zip
+          body: |
+            下载 MiniShot.zip，解压后把 MiniShot.app 拖进“应用程序”。
+
+            第一次打开前在终端运行一次（App 没有经过苹果公证）：
+            ```
+            xattr -cr /Applications/MiniShot.app
+            ```
+            然后打开 App，按提示授予“屏幕录制”权限后重新打开。
